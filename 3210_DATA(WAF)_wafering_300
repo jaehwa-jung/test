@@ -1,0 +1,389 @@
+-- LossYieldService.SELECT_TEAM_LOSS_RATE_GRID_WAF_REV05
+        /*	---------------------------------------------------------------------------------------------------------------------------------------------------------
+            생성일		:	2020-12-08
+            작성자		:	미니소프트 백정욱
+            설명		:	팀별 불량률 관리 DATA GRID WAF 단위
+            변경 이력	:
+                            2020-12-08	:	기존 불량 테이블 ( DM_PP_AC_TOTALFAULTDTLSTD_S ) -> DM_PP_AC_TOTALFAULTDTLWAFSTD_S 변경
+                            2021-01-04	:	이수현 프로 => TEAM_GROUP 멀티 선택하게 변경 처리
+                            2021-01-15	:	WAF 단위 데이터에 공정별 장비명 추가
+                            2021-01-15	:	귀책 변경 데이터 추가
+                            2021-01-28	:	1) 	EQP_ID_200_WF_6300, EQP_ID_200_EPI_8030 내용 업데이트
+                                            2)	EQP_ID_200_WF_6300 내용 변경
+                            2021-02-03	:	김민선 프로 -> 300WF) 3200, 3670, 3696, 3700, 6100, 6210, 6500, 6700, 7050 내용 추가
+                            2021-06-18	:	김재신 Pro : 불량/폐기 그룹 필터링 추가
+                            2021-06-28	:	박중하 Pro : 200mm EQP_NM -> DM_QM_PW_MSLOTPROC_H테이블로 변경
+                            2021-11-04	:	이전 함수 ( PMDW_MGR.F_GET_EQPOPERHIS_INF ) 삭제 하고 Z2로 대체
+                            2021-12-29	:	김재신 Pro : QD#38 불량, 폐기 분석 시 Ingot Position 정보가 필요하여 추가하고자 함.
+                            2021-12-29	:	김재신 프로 EPI 청주 MS 제품 제외
+                            2022-01-20	:	김재신프로 CJ 실적 필터 추가 (300mm EPI)
+                            2022-03-21	:	김민규프로 GRADE CS 추가
+                            2022-05-25	:	강주영프로 200mm EQP_NM 추가
+                            2022-07-18  :   김민규프로 MS FILTER 추가
+                            2022-10-20  :   최문석프로 REJ_RSN_CD ALIAS 대체
+							2024-12-11  :   권보경프로 MS별 Part No. 컬럼 추가
+							2025-02-25  :   손근하 INSP_USED_ID 항목 추가
+							2025-03-21  :   정원진프로 3335, 6090 공정 추가
+							2025-09-26  :   유재형프로 신규공장 추가 및 공장 다중선택
+							2025-10-14  :   이수호프로 Part No 필터 추가
+							2025-10-20  :   전나정프로 제품군2 필터 추가
+							2025-12-23  :   김진욱프로 SLOT NO 컬럼 추가
+        --------------------------------------------------------------------------------------------------------------------------------------------------------- 	*/
+            SELECT 		A.*
+                ,		NVL( Z1.TEAMGRP_NM, A.REAL_DPT_GROUP) N_DPT_GROUP
+                ,		(SELECT S1.EQP_NM FROM PMDW_MGR.DW_BA_CM_STDPEQP_M S1 WHERE S1.FAC_ID = A.FAC_ID AND S1.EQP_ID = A.EQP_ID AND ROWNUM <=1) EQP_NM
+                
+            FROM
+            (
+                        -- 데이터 테이블
+                        SELECT
+                                    A.WAF_ID
+                            ,		A.WAF_SEQ
+                            ,		A.WAF_SIZE
+                            ,		A.BASE_DT
+                            ,		A.DIV_CD
+                            ,		A.REJ_DIV_CD
+                            ,		A.FAC_ID
+                            ,		A.OPER_ID
+                            ,		A.OWNR_CD
+                            ,		A.CRET_CD
+                            ,		A.PROD_ID
+                            ,		A.IGOT_ID
+                            ,		A.BLK_ID
+                            ,		A.SUBLOT_ID
+                            ,		A.USER_LOT_ID
+                            ,		A.EQP_ID
+                            ,		C.CUST_SITE_NM
+                            ,       NVL(TRIM((SELECT XX.ALIAS_RSN_CD    -- 22.10.20 최문석프로 요청으로 REJ_RSN_CD -> ALIAS_RSN_CD 대체
+                                    FROM    PMDW_MGR.DW_BA_CM_REJRSNINFO_M XX
+                                    WHERE   1=1
+                                    AND     XX.WAF_SIZE     = '300'
+                                    AND     XX.PROD_DIV_CD  = DECODE('WF', 'WF', 'PW', 'EPI')
+                                    AND     XX.REJ_RSN_GRP  = A.REJ_GROUP
+                                    AND     XX.REJ_RSN_CD   = A.BEF_BAD_RSN_CD
+                                    AND     ROWNUM          <= 1
+                                    )), BEF_BAD_RSN_CD) AS BEF_BAD_RSN_CD
+                            ,       NVL(TRIM((SELECT XX.ALIAS_RSN_CD    -- 22.10.20 최문석프로 요청으로 REJ_RSN_CD -> ALIAS_RSN_CD 대체
+                                    FROM    PMDW_MGR.DW_BA_CM_REJRSNINFO_M XX
+                                    WHERE   1=1
+                                    AND     XX.WAF_SIZE     = '300'
+                                    AND     XX.PROD_DIV_CD  = DECODE('WF', 'WF', 'PW', 'EPI')
+                                    AND     XX.REJ_RSN_GRP  = A.REJ_GROUP
+                                    AND     XX.REJ_RSN_CD   = A.AFT_BAD_RSN_CD
+                                    AND     ROWNUM          <= 1
+                                    )), AFT_BAD_RSN_CD) AS AFT_BAD_RSN_CD
+                            ,		A.REJ_GROUP
+                            ,		A.OPER1_GROUP
+                            ,		A.OPER2_GROUP
+                            ,		A.RESPON
+                            ,		A.ALLO_GROUP
+                            ,		A.RESPON_RATIO
+                            ,		A.IN_QTY
+                            ,		A.OUT_QTY
+                            ,		A.LOSS_QTY
+                            ,		A.REAL_DPT_GROUP
+                            ,		(SELECT CD_NM FROM DMS_MGR.TB_FX_CODES WHERE UP_CD='DMS010' AND SYS_CD='DMS' AND CD_VAL=C.GRD_CD_NM AND C.PROD_ID IS NOT NULL) GRD_CD_NM_CS
+                            ,		(SELECT CD_NM FROM DMS_MGR.TB_FX_CODES WHERE UP_CD='DMS010' AND SYS_CD='DMS' AND CD_VAL=C.GRD_CD_NM_PS  AND C.PROD_ID IS NOT NULL) GRD_CD_NM_PS
+                            ,		SUBSTR(B.BESOF_BASE_YW_NM,3) WEEK_DAY_NM
+                            ,		A.HST_REG_DTTM
+                            ,		(	CASE 	WHEN TRIM(A.WAF_ID) IS NULL THEN (SELECT PMDW_MGR.F_GET_WAF_CUT_POS(A.IGOT_ID, A.WAF_SEQ, '3300') AS WAF_CUT_LO FROM DUAL)
+                                        ELSE	(	SELECT 	/*+ INDEX(AA QM_PW_WAF_I_IDX02) */ AA.WAF_CUT_LO --추가 컬럼
+                                                    FROM 	PMDW_MGR.DW_QM_PW_WAF_I AA
+                                                    WHERE 	1=1
+                                                    AND 	AA.IGOT_ID 	= A.IGOT_ID
+                                                    AND 	AA.WAF_SEQ 	= A.WAF_SEQ
+                                                    AND		ROWNUM <= 1	)
+                                        END
+                                    ) AS WAF_CUT_LO		-- 2021-12-29 김재신프로 요청
+                            ,		A.DATA_TYPE
+                            ,       A.DATA_CHG_DTTM
+                            ,		PMDW_MGR.F_GET_PART_NO(A.PROD_ID) AS PART_NO
+							,       ( SELECT T.INSP_USED_ID
+                                        FROM PMDW_MGR.SY_ODB_DSP_INSPDATA_HIS T
+                                       WHERE A.IGOT_ID = T.SINGLE_NO
+                                         AND A.WAF_SEQ = T.WAF_SEQ_NO
+                                         AND ROWNUM <= 1 ) AS INSP_USED_ID -- 2025-02-25 손근하 INSP_USED_ID 항목 추가
+                        FROM 		(
+                                        SELECT  A.WAF_ID, A.WAF_SEQ, A.WAF_SIZE, A.BASE_DT, A.DIV_CD, A.REJ_DIV_CD, A.FAC_ID, A.OPER_ID, A.OWNR_CD, A.CRET_CD, A.PROD_ID, A.IGOT_ID, A.BLK_ID, A.SUBLOT_ID
+                                            ,   A.USER_LOT_ID, A.EQP_ID, A.BEF_BAD_RSN_CD, A.AFT_BAD_RSN_CD, A.REJ_GROUP, A.OPER1_GROUP, A.OPER2_GROUP, A.RESPON, A.ALLO_GROUP
+                                            ,   A.RESPON_RATIO, A.IN_QTY, A.OUT_QTY, A.LOSS_QTY, A.REAL_DPT_GROUP, A.HST_REG_DTTM, 'ORI' DATA_TYPE, DATA_CHG_DTTM
+                                        FROM    PMDW_MGR.DM_PP_AC_TOTALFAULTDTLWAFSTD_S A
+                                        UNION ALL
+                                        SELECT  A.WAF_ID, A.WAF_SEQ, A.WAF_SIZE, A.BASE_DT, A.DIV_CD, A.REJ_DIV_CD, A.FAC_ID, A.OPER_ID, A.OWNR_CD, A.CRET_CD, A.PROD_ID, A.IGOT_ID, A.BLK_ID, A.SUBLOT_ID
+                                            ,   A.USER_LOT_ID, A.EQP_ID, A.BEF_BAD_RSN_CD, A.AFT_BAD_RSN_CD, A.REJ_GROUP, A.OPER1_GROUP, A.OPER2_GROUP, A.RESPON, A.ALLO_GROUP
+                                            ,   A.RESPON_RATIO, A.IN_QTY, A.OUT_QTY, A.LOSS_QTY, A.REAL_DPT_GROUP, NULL HST_REG_DTTM, 'MNL' DATA_TYPE, DATA_CHG_DTTM
+                                        FROM    PMDW_MGR.DW_BA_CM_TOTALFAULTMANUAL_S A
+                                    ) A
+                        JOIN 		PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                        ON 			B.BASE_DT 						= 	A.BASE_DT
+                        LEFT JOIN 	PMDW_MGR.DW_BA_MS_PROD_M C
+                        ON 			C.PROD_ID 						= 	A.PROD_ID
+                        AND 		C.SPEC_DIV_CD 					= 	'PS'
+                        JOIN 		PMDW_MGR.DW_BA_CM_STDPOPER_M    Z
+                        ON 			Z.FAC_ID 						= 	A.FAC_ID
+                        AND 		Z.OPER_ID 						= 	A.OPER_ID
+                        WHERE		A.WAF_SIZE 						= 	'300'
+                        AND			A.BASE_DT 						BETWEEN DECODE('D', 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101') AND '20260106'
+                        AND			Z.OPER_DIV_L					=	'WF'
+                        AND			( ('PN'					=	'PN')	OR	(C.GRD_CD_NM	=	'PN') )
+                        AND			( ('PN'				=	'PN')	OR	(C.GRD_CD_NM_PS	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                        -- AND			Z.FAC_ID						LIKE	'WF7,WF8,WFA,FPC7,FPC8' || '%'
+						AND Z.FAC_ID IN ('WF7','WF8','WFA','FPC7','FPC8') -- 2025-03-24 손근하 검색조건 FAC_ID 다중 선택 가능하도록 변경
+                        --FAC_ID 조건 추가로 CJMS 삭제
+						--AND			( '%'  = '%' 				OR   (SELECT DMS_MGR.FN_ISCJMS(A.PROD_ID) FROM DUAL) = 'N'  ) -- 22-01-20 CJMS여부 확인
+                        AND         (SELECT DMS_MGR.FN_SIC_FACID_YN(A.FAC_ID) FROM DUAL) = 'N'
+                        
+                        
+						
+						
+            ) A
+            OUTER APPLY
+            (
+
+                        -- 팀부서그룹
+                        SELECT 		TEAMGRP_NM
+                        FROM		(	SELECT 		S2.TEAMGRP_NM, S2.SORT_SEQ,  ROW_NUMBER() OVER (ORDER BY ST_DT DESC) AS M
+                                        FROM 		PMDW_MGR.DW_BA_CM_LOSSREJGRPDTL_M S1
+                                        INNER JOIN	PMDW_MGR.DW_BA_CM_LOSSREJGRP_M S2
+                                        ON			S1.TEAMGRP_CD					=	S2.TEAMGRP_CD
+                                        AND			S1.WAF_SIZE						= 	S2.WAF_SIZE
+                                        AND			S1.OPER_DIV_L					=	S2.OPER_DIV_L
+                                        AND			S1.TARGET_DIV_CD 				IN ('A','L') /*A= 전체, L=불량, R=폐기*/
+                                        AND			S1.WAF_SIZE						= '300'
+                                        AND			S1.OPER_DIV_L					= 'WF'
+                                        AND			S1.ED_DT						>= DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')
+                                        AND			S1.ST_DT						<= '20260106'
+                                        AND			S1.DPT_CD						= A.REAL_DPT_GROUP
+                                        ORDER BY 	M DESC	) SRES
+                        WHERE 			ROWNUM=1
+            ) Z1
+            OUTER APPLY
+            (
+                    SELECT 	BB.*
+                    FROM
+                    (
+                            SELECT
+                                    MAX(CASE WHEN B.OPER_ID = '3200' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3200
+                            ,       MAX(CASE WHEN B.OPER_ID = '3300' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3300
+                            ,       MAX(CASE WHEN B.OPER_ID = '3335' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3335
+                            ,       MAX(CASE WHEN B.OPER_ID = '3670' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3670
+                            ,       MAX(CASE WHEN B.OPER_ID = '3690' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3690
+                            ,       MAX(CASE WHEN B.OPER_ID = '3696' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3696
+                            ,       MAX(CASE WHEN B.OPER_ID = '3700' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3700
+                            ,       MAX(CASE WHEN B.OPER_ID = '3900' THEN BB.EQP_NM END) AS EQP_NM_300_WF_3900
+                            ,       MAX(CASE WHEN B.OPER_ID = '6090' THEN BB.EQP_NM END) AS EQP_NM_300_WF_6090
+                            ,       MAX(CASE WHEN B.OPER_ID = '6100' THEN BB.EQP_NM END) AS EQP_NM_300_WF_6100
+                            ,       MAX(CASE WHEN B.OPER_ID = '6210' THEN BB.EQP_NM END) AS EQP_NM_300_WF_6210
+                            ,       MAX(CASE WHEN B.OPER_ID = '6500' THEN BB.EQP_NM END) AS EQP_NM_300_WF_6500
+                            ,       MAX(CASE WHEN B.OPER_ID = '6700' THEN BB.EQP_NM END) AS EQP_NM_300_WF_6700
+							,       MAX(CASE WHEN B.OPER_ID = '6950' THEN BB.EQP_NM END) AS EQP_NM_300_WF_6950 -- 20250703 손근하 상세 EQP 6950 공정 추가
+                            ,       MAX(CASE WHEN B.OPER_ID = '7000' THEN BB.EQP_NM END) AS EQP_NM_300_WF_7000
+                            ,       MAX(CASE WHEN B.OPER_ID = '7050' THEN BB.EQP_NM END) AS EQP_NM_300_WF_7050
+                            ,       MAX(CASE WHEN B.OPER_ID = '7100' THEN BB.EQP_NM END) AS EQP_NM_300_WF_7100
+
+                            ,       MAX(CASE WHEN B.OPER_ID = '8030' THEN BB.EQP_NM END) AS EQP_NM_300_EPI_8030
+                            ,       MAX(CASE WHEN B.OPER_ID = '8061' THEN BB.EQP_NM END) AS EQP_NM_300_EPI_8061
+                            ,       MAX(CASE WHEN B.OPER_ID = '8105' THEN BB.EQP_NM END) AS EQP_NM_300_EPI_8105
+
+                            ,       MAX(CASE WHEN B.OPER_ID = '3200' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3200
+                            ,       MAX(CASE WHEN B.OPER_ID = '3300' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3300
+                            ,       MAX(CASE WHEN B.OPER_ID = '3335' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3335
+                            ,       MAX(CASE WHEN B.OPER_ID = '3670' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3670
+                            ,       MAX(CASE WHEN B.OPER_ID = '3690' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3690
+                            ,       MAX(CASE WHEN B.OPER_ID = '3696' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3696
+                            ,       MAX(CASE WHEN B.OPER_ID = '3700' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3700
+                            ,       MAX(CASE WHEN B.OPER_ID = '3900' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_3900
+                            ,       MAX(CASE WHEN B.OPER_ID = '6090' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_6090
+                            ,       MAX(CASE WHEN B.OPER_ID = '6100' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_6100
+                            ,       MAX(CASE WHEN B.OPER_ID = '6210' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_6210
+                            ,       MAX(CASE WHEN B.OPER_ID = '6500' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_6500
+                            ,       MAX(CASE WHEN B.OPER_ID = '6700' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_6700 
+							,       MAX(CASE WHEN B.OPER_ID = '6950' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_6950 -- 20250703 손근하 상세 EQP 6950 공정 추가
+                            ,       MAX(CASE WHEN B.OPER_ID = '7000' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_7000
+                            ,       MAX(CASE WHEN B.OPER_ID = '7050' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_7050
+                            ,       MAX(CASE WHEN B.OPER_ID = '7100' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_WF_7100
+
+                            ,       MAX(CASE WHEN B.OPER_ID = '8030' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_EPI_8030
+                            ,       MAX(CASE WHEN B.OPER_ID = '8061' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_EPI_8061
+                            ,       MAX(CASE WHEN B.OPER_ID = '8105' THEN B.MSR_HST_REG_DTTM END) AS REG_DTTM_300_EPI_8105
+							
+							,       MAX(CASE WHEN B.OPER_ID = '3200' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3200
+							,       MAX(CASE WHEN B.OPER_ID = '3300' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3300
+							,       MAX(CASE WHEN B.OPER_ID = '3335' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3335
+							,       MAX(CASE WHEN B.OPER_ID = '3670' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3670
+							,       MAX(CASE WHEN B.OPER_ID = '3690' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3690
+							,       MAX(CASE WHEN B.OPER_ID = '3696' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3696
+							,       MAX(CASE WHEN B.OPER_ID = '3700' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3700
+							,       MAX(CASE WHEN B.OPER_ID = '3900' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_3900
+							,       MAX(CASE WHEN B.OPER_ID = '6090' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_6090
+							,       MAX(CASE WHEN B.OPER_ID = '6100' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_6100
+							,       MAX(CASE WHEN B.OPER_ID = '6210' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_6210
+							,       MAX(CASE WHEN B.OPER_ID = '6500' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_6500
+							,       MAX(CASE WHEN B.OPER_ID = '6700' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_6700
+							,       MAX(CASE WHEN B.OPER_ID = '6950' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_6950
+							,       MAX(CASE WHEN B.OPER_ID = '7000' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_7000
+							,       MAX(CASE WHEN B.OPER_ID = '7050' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_7050
+							,       MAX(CASE WHEN B.OPER_ID = '7100' THEN B.SLOT_NO END) AS SLOT_NO_300_WF_7100
+							
+							,       MAX(CASE WHEN B.OPER_ID = '8030' THEN B.SLOT_NO END) AS SLOT_NO_300_EPI_8030
+							,       MAX(CASE WHEN B.OPER_ID = '8061' THEN B.SLOT_NO END) AS SLOT_NO_300_EPI_8061
+							,       MAX(CASE WHEN B.OPER_ID = '8105' THEN B.SLOT_NO END) AS SLOT_NO_300_EPI_8105
+                            FROM
+                            (
+                                    SELECT 	EQP_ID, OPER_ID, MSR_HST_REG_DTTM, SLOT_NO, RANK() OVER(PARTITION BY OPER_ID ORDER BY MSR_HST_REG_DTTM DESC, SLOT_NO DESC) RNK
+                                    FROM
+                                    (
+                                            SELECT  /*+INDEX(B ODB_DWAF_OPE_HIS_IDX02)*/  EQP_ID, OPE_ID AS OPER_ID,  MAX(HIS_REGIST_DTTM) AS MSR_HST_REG_DTTM, MAX(SLOT_NO) AS SLOT_NO
+                                            FROM    OGGZMGR.ODB_DWAF_OPE_HIS  B
+                                            WHERE 	B.SINGLE_NO 			= A.IGOT_ID
+                                            AND 	B.WAF_SEQ_NO 			= A.WAF_SEQ
+                                            AND 	B.HIS_CAT		        = 'OC'
+                                            AND 	B.HIS_REGIST_DTTM 	    < A.HST_REG_DTTM
+                                            AND		B.OPE_ID IN ('')
+											AND     B.FAB_ID = 'WF7'
+                                            AND		'' IS NOT NULL
+                                            AND		'300'				='300'
+                                            GROUP BY EQP_ID, OPE_ID
+                                            UNION ALL
+                                            SELECT /*+INDEX(B ODB_DWAF_OPE_HIS_IDX02 )*/ EQP_ID, OPE_ID AS OPER_ID,  MAX(HIS_REGIST_DTTM) AS MSR_HST_REG_DTTM, MAX(SLOT_NO) AS SLOT_NO
+                                            FROM    OGGZMGR.ODB_DWAF_OPE_HIS  B
+                                            WHERE 	B.SINGLE_NO 			= A.IGOT_ID
+                                            AND 	B.WAF_SEQ_NO 			= A.WAF_SEQ
+                                            AND 	B.HIS_CAT		        = 'OC'
+                                            AND 	B.HIS_REGIST_DTTM 	    < A.HST_REG_DTTM
+                                            AND		B.OPE_ID IN ('')
+											AND     B.FAB_ID = 'WF8'
+                                            AND		'' IS NOT NULL
+                                            AND		'300'				='300'
+                                            GROUP BY EQP_ID, OPE_ID
+                                            UNION ALL
+                                            SELECT /*+INDEX(B ODB_DWAF_OPE_HIS_IDX02 )*/ EQP_ID, OPE_ID AS OPER_ID,  MAX(HIS_REGIST_DTTM) AS MSR_HST_REG_DTTM, MAX(SLOT_NO) AS SLOT_NO
+                                            FROM    OGGZMGR.ODB_DWAF_OPE_HIS  B
+                                            WHERE 	B.SINGLE_NO 			= A.IGOT_ID
+                                            AND 	B.WAF_SEQ_NO 			= A.WAF_SEQ
+                                            AND 	B.HIS_CAT		        = 'OC'
+                                            AND 	B.HIS_REGIST_DTTM 	    < A.HST_REG_DTTM
+                                            AND		B.OPE_ID IN ('')
+											AND     B.FAB_ID = 'WF9'
+                                            AND		'' IS NOT NULL
+                                            AND		'300'				='300'
+                                            GROUP BY EQP_ID, OPE_ID
+                                            UNION ALL
+                                            -- 3200 전용
+                                            SELECT  /*+INDEX(B ODB_DWAF_OPE_HIS_IDX02)*/  B.EQP_ID, B.OPE_ID AS OPER_ID,  MAX(B.HIS_REGIST_DTTM) AS MSR_HST_REG_DTTM, MAX(SLOT_NO) AS SLOT_NO
+                                            FROM    OGGZMGR.ODB_DWAF_OPE_HIS  B
+                                            WHERE 	B.SINGLE_NO 			= A.IGOT_ID
+                                            AND		B.WAF_SEQ_NO			= '0'
+                                            AND 	B.BLK_NO 				= A.BLK_ID
+                                            AND 	B.HIS_CAT		        = 'OC'
+                                            AND		B.OPE_ID 				= '3200'
+                                            AND 	B.HIS_REGIST_DTTM 	    < A.HST_REG_DTTM
+											AND     B.FAB_ID = 'WF7'
+                                            AND		'WF'			= 'WF'
+                                            AND		'' IS NOT NULL
+                                            AND		'' IS NOT NULL
+                                            AND		'300'				='300'
+                                            GROUP BY EQP_ID, OPE_ID
+                                            UNION ALL
+                                            SELECT /*+INDEX(B ODB_DWAF_OPE_HIS_IDX02 )*/ EQP_ID, OPE_ID AS OPER_ID,  MAX(HIS_REGIST_DTTM) AS MSR_HST_REG_DTTM, MAX(SLOT_NO) AS SLOT_NO
+                                            FROM    OGGZMGR.ODB_DWAF_OPE_HIS  B
+                                            WHERE 	B.SINGLE_NO 			= A.IGOT_ID
+                                            AND		B.WAF_SEQ_NO			= '0'
+                                            AND 	B.BLK_NO 				= A.BLK_ID
+                                            AND 	B.HIS_CAT		        = 'OC'
+                                            AND		B.OPE_ID 				= '3200'
+                                            AND 	B.HIS_REGIST_DTTM 	    < A.HST_REG_DTTM
+											AND     B.FAB_ID = 'WF8'
+                                            -- AND		A.WAF_SIZE||A.FAC_ID    = '300WF8'
+                                            AND		'WF'			= 'WF'
+                                            AND		'' IS NOT NULL
+                                            AND		'' IS NOT NULL
+                                            AND		'300'				='300'
+                                            GROUP BY EQP_ID, OPE_ID
+                                            UNION ALL
+                                            SELECT /*+INDEX(B ODB_DWAF_OPE_HIS_IDX02 )*/ EQP_ID, OPE_ID AS OPER_ID,  MAX(HIS_REGIST_DTTM) AS MSR_HST_REG_DTTM, MAX(SLOT_NO) AS SLOT_NO
+                                            FROM    OGGZMGR.ODB_DWAF_OPE_HIS  B
+                                            WHERE 	B.SINGLE_NO 			= A.IGOT_ID
+                                            AND		B.WAF_SEQ_NO			= '0'
+                                            AND 	B.BLK_NO 				= A.BLK_ID
+                                            AND 	B.HIS_CAT		        = 'OC'
+                                            AND		B.OPE_ID 				= '3200'
+                                            AND 	B.HIS_REGIST_DTTM 	    < A.HST_REG_DTTM
+											AND     B.FAB_ID = 'WF9'
+                                            AND		'WF'			= 'WF'
+                                            AND		'' IS NOT NULL
+                                            AND		'' IS NOT NULL
+                                            AND		'300'				='300'
+                                            GROUP BY EQP_ID, OPE_ID
+                                    ) B
+
+                            ) B
+                            LEFT JOIN
+                            (
+                                        SELECT 	DISTINCT S1.EQP_NM, S1.EQP_ID
+                                        FROM 	PMDW_MGR.DW_BA_CM_STDPEQP_M S1
+                            ) BB
+                            ON			BB.EQP_ID		= B.EQP_ID
+                            WHERE 		1=1
+                            AND			RNK=1
+                    ) BB
+
+            ) Z2
+
+            OUTER APPLY
+            (
+                        SELECT 		/*+ INDEX(S1 QM_PW_MSLOTPROC_H_PK) */
+                                S1.EQP_NM_2300 AS EQP_NM_200_WF_2300
+                        ,		S1.EQP_NM_2350 AS EQP_NM_200_WF_2350
+                        ,		S1.EQP_NM_3250 AS EQP_NM_200_WF_3250
+                        ,		S1.EQP_NM_3300 AS EQP_NM_200_WF_3300
+                        ,		S1.EQP_NM_3400 AS EQP_NM_200_WF_3400
+                        ,		S1.EQP_NM_3500 AS EQP_NM_200_WF_3500
+                        ,		S1.EQP_NM_3600 AS EQP_NM_200_WF_3600
+                        ,		S1.EQP_NM_3700 AS EQP_NM_200_WF_3700
+                        ,		S1.EQP_NM_3800 AS EQP_NM_200_WF_3800
+                        ,		S1.EQP_NM_3850 AS EQP_NM_200_WF_3850
+                        ,		S1.EQP_NM_3860 AS EQP_NM_200_WF_3860
+
+                        ,		S1.EQP_NM_3900 AS EQP_NM_200_WF_3900
+                        , 		S1.EQP_NM_4000 AS EQP_NM_200_WF_4000
+                        , 		S1.EQP_NM_4200 AS EQP_NM_200_WF_4200
+                        , 		S1.EQP_NM_4210 AS EQP_NM_200_WF_4210
+                        , 		S1.EQP_NM_4454 AS EQP_NM_200_WF_4454
+                        , 		S1.EQP_NM_4455 AS EQP_NM_200_WF_4455
+                        , 		S1.EQP_NM_4456 AS EQP_NM_200_WF_4456
+                        , 		S1.EQP_NM_4500 AS EQP_NM_200_WF_4500
+                        , 		S1.EQP_NM_4600 AS EQP_NM_200_WF_4600
+                        , 		S1.EQP_NM_5120 AS EQP_NM_200_WF_5120
+                        , 		S1.EQP_NM_5130 AS EQP_NM_200_WF_5130
+                        , 		S1.EQP_NM_5135 AS EQP_NM_200_WF_5135
+                        , 		S1.EQP_NM_5140 AS EQP_NM_200_WF_5140
+                        , 		S1.EQP_NM_6180 AS EQP_NM_200_WF_6180
+                        , 		S1.EQP_NM_6200 AS EQP_NM_200_WF_6200
+                        , 		S1.EQP_NM_6250 AS EQP_NM_200_WF_6250
+                        , 		S1.EQP_NM_6260 AS EQP_NM_200_WF_6260
+                        , 		S1.EQP_NM_6265 AS EQP_NM_200_WF_6265
+                        , 		S1.EQP_NM_6270 AS EQP_NM_200_WF_6270
+                        , 		S1.EQP_NM_6275 AS EQP_NM_200_WF_6275
+                        , 		S1.EQP_NM_6300 AS EQP_NM_200_WF_6300
+                        , 		S1.EQP_NM_6500 AS EQP_NM_200_WF_6500
+                        , 		S1.EQP_NM_6600 AS EQP_NM_200_WF_6600
+                        , 		S1.EQP_NM_6800 AS EQP_NM_200_WF_6800
+                        , 		S1.EQP_NM_7100 AS EQP_NM_200_WF_7100
+                        , 		S1.EQP_NM_7300 AS EQP_NM_200_WF_7300
+
+                        , 		S1.EQP_NM_8030 AS EQP_NM_200_EPI_8030
+                        , 		S1.EQP_NM_8050 AS EQP_NM_200_EPI_8050
+                        , 		S1.EQP_NM_8100 AS EQP_NM_200_EPI_8100
+                        , 		S1.EQP_NM_8200 AS EQP_NM_200_EPI_8200
+
+                    FROM 		PMDW_MGR.DM_QM_PW_MSLOTPROC_H S1
+                    WHERE 		S1.LOT_ID = A.SUBLOT_ID
+                    AND			ROWNUM <= 1
+                    AND			'300' 	= '200'
+                    AND			'' IS NOT NULL
+            ) Z3
+
+            WHERE		1=1
+            
+            ORDER BY 4,1,2
