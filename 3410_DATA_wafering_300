@@ -1,0 +1,652 @@
+-- ScrapYieldService.SELECT_TEAM_SCRAP_RATE_REV04
+            /*	---------------------------------------------------------------------------------------------------------------------------------------------------------
+                생성일		:	N/A
+                작성자		:	미니소프트 백정욱
+                설명			:	팀별 폐기율 관리 CHART
+                변경 이력		:
+                                    2020-06-10	:	LS	(300mm 폐기 실적) 박프로님 쿼리
+                                                                +	기존 쿼리
+                                    2020-06-22	:	[하드코딩 추가]
+                                                    1. DMS 폐기 데이터 중에 300mm EPI 인 경우, OWNER_CODE가 EPIRW 이고, CODE 비율이 1이 아닌 경우 부서(DPT_GROUP)는 무조건 ‘EPI 기술2팀’으로 하드코딩
+                                                    2. ORG_REJ_RSN_CD -> STD_REJ_RSN_CD 변경
+
+                                    2020-06-29	:	200mm REJ_RSN_CD 앞에 4자리 숫자 붙은것은 잘라내고 JOIN
+                                    2020-07-03	:	이수현프로 FAC_ID 추가 (분자,분모)
+                                    2020-07-13	:	보정 데이터 반영
+                                    2020-07-16	:	MGR_QTY = 종판수량 추가
+                                    2020-07-24	:	보정테이블 200mm, 300mm 나눠져 있는것을 합친다고 기존 테이블을 drop해서 기존 로직에서 제외시킴
+                                    2020-07-29	:	기존 200mm, 300mm 데이터 테이블 통합으로 인하여 테이블 수정
+                                                                                                                    DM_PP_AC_MSREJSTD_S
+                                                            DM_PP_AC_TOTALREJDTLSTD_S	=		DM_PP_AC_LSREJSTD_S
+                                                                                                                    DW_BA_CM_OPERDPTINFO_M
+                                                                                                                    DW_BA_CM_REJDPTINFO_M
+                                    2020-08-05	:	2020-06-22 하드코딩내용 누락으로 추가 반영
+                                    2020-09-14	:	변경된 불량/폐기 '팀그룹 정보' 추가 반영 (DMS034, DMS035 제외)
+                                                    ㄴ 	PMDW_MGR.DW_BA_CM_LOSSREJGRPINFO_M
+                                                    ㄴ	PMDW_MGR.DW_BA_CM_LOSSREJGRP_M
+                                    2020-12-28	:	DW_BA_CM_LOSSREJGRPINFO_M -> DW_BA_CM_LOSSREJGRPDTL_M 변경 (ST_DT, ED_DT 추가)
+                                    2021-01-04	:	이수현 프로 => TEAM_GROUP 멀티 선택하게 변경 처리
+                                    2021-02-04	:	박중하 프로 -> 로직 변경요청
+                                                    CASE WHEN A.BASE_DT < '20210101' AND A.OWNR_CD='EPIRW' AND '300'='300' AND A.PROD_DIV_CD='EPI' AND A.RESPON='ALLO' AND A.RATIO < 1 THEN 'EPI기술2팀' ELSE  A.REAL_DPT_GROUP END DPT_GROUP
+                                    2021-03-10	:	박중하 프로 -> 300mm REJ_DIV_CD <> '창고폐기' 제외 요청
+                                    2021-06-18	:	김재신 Pro : 불량/폐기 그룹 필터링 추가
+                                    2021-12-29	:	김재신 프로 EPI 청주 MS 제품 제외
+                                    2022-01-20	:	김재신프로 CJ 실적 필터 추가 (300mm EPI)
+                                    2022-03-21	: 	김민규프로 GRADE_CS, GRADE_PS 추가
+                                    2022-07-18  :   김민규프로 MS_ID 필터 추가
+                                    2022-10-20  :   최문석프로 REJ_RSN_CD ALIAS 대체
+                                    2024-09-25  :   박준호프로 Factory 기반으로 공장 구분하다록 수정, MS_ID 필터 삭제
+									2025-01-15  :   강주영프로 폐기/불량 팀 기준정보에 부서가 없을 경우 팀그룹이 NULL 로 산출될 경우 오류 발생으로 인한 NVL 로직 추가
+									2025-03-04  :   전나정프로 Grade 추가
+									2025-08-19  :   하태홍프로 200mm REJ_RSN_CD > REJ_RSN_CD2 변경
+									2025-09-29  :   전나정프로 전체 목표에서 R&D 제외. R&D 개별 목표는 0.9% 로 일괄 표시
+									2025-10-14  :   이수호프로 Part No 필터 추가
+									2025-10-20  :   전나정프로 제품군2 필터 추가
+            --------------------------------------------------------------------------------------------------------------------------------------------------------- */
+            WITH  SCRAP_DATA  AS
+            (
+                SELECT 		OPER_DIV_L, BASE_DT, RJ_GROUP
+
+                            -- 22.10.20 최문석프로 요청으로 REJ_RSN_CD -> ALIAS_RSN_CD 대체
+                ,           NVL(TRIM((SELECT XX.ALIAS_RSN_CD
+                            FROM    PMDW_MGR.DW_BA_CM_REJRSNINFO_M XX
+                            WHERE   1=1
+                            AND     XX.WAF_SIZE     = '300'
+                            AND     XX.PROD_DIV_CD  = DECODE('WF', 'WF', 'PW', 'EPI')
+                            AND     XX.REJ_RSN_GRP  = FF.RJ_GROUP
+                            AND     XX.REJ_RSN_CD   = FF.REJ_RSN_CD
+                            AND     ROWNUM          <= 1
+                            )), REJ_RSN_CD) AS REJ_RSN_CD
+                ,           DIV_CD, OPER_ID, NVL(E.TEAMGRP_NM, FF.DPT_GROUP) DPT_GROUP
+                ,			SUM(CASE WHEN 		( '' IS NULL OR  INSTR('', NVL(E.TEAMGRP_NM, '-') || ',') > 0 )
+                                            AND	( '' IS NULL OR  INSTR('', RJ_GROUP || ',') > 0)
+                                        THEN FF.DIS_QTY ELSE 0.0 END) DIS_QTY
+                , 			SUM(DIS_QTY) TOT_DIS_QTY
+                FROM
+                (
+                            -- 데이터 테이블
+                            SELECT 		/*+ ORDERED */
+                                        Z.OPER_DIV_L, A.BASE_DT, A.RJ_GROUP
+                                ,		DECODE('300', 200, A.REJ_RSN_CD2, A.STD_REJ_RSN_CD) REJ_RSN_CD
+                                ,		A.OPER_ID
+								,		'' DIV_CD
+                                ,		CASE WHEN A.BASE_DT < '20210101' AND A.OWNR_CD='EPIRW' AND '300'='300' AND A.PROD_DIV_CD='EPI' AND A.RESPON='ALLO' AND A.RATIO < 1 THEN 'EPI기술2팀' ELSE  A.REAL_DPT_GROUP END DPT_GROUP
+                                ,		SUM( A.QTY ) DIS_QTY
+                            FROM 		PMDW_MGR.DM_PP_AC_TOTALREJDTLSTD_S 	A
+                            JOIN		PMDW_MGR.DW_BA_CM_STDPOPER_M	Z
+                            ON			Z.FAC_ID						=	A.FAC_ID
+                            AND			Z.OPER_ID						=	A.OPER_ID
+                            LEFT JOIN 	PMDW_MGR.DW_BA_MS_PROD_M D
+                            ON			D.PROD_ID						=	A.PROD_ID
+                            AND			D.SPEC_DIV_CD 					=	'PS'
+                            WHERE		1=1
+                            AND			Z.WAF_SIZE						=	'300'
+                            AND			Z.OPER_DIV_L					=	'WF'
+                            
+							AND A.FAC_ID IN ('WF7','WF8','WFA','FPC7','FPC8')
+                            AND			'300' || A.REJ_DTL_DIV_CD		<> '300창고' --20210310 From 박중하 Pro 요청
+                            AND			(('PN'	=	'PN')	OR	(D.GRD_CD_NM	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                            AND			(('PN'	=	'PN')	OR	(D.GRD_CD_NM_PS	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                            AND         (SELECT DMS_MGR.FN_SIC_FACID_YN(A.FAC_ID) FROM DUAL) = 'N'
+                            AND         A.BASE_DT				BETWEEN DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')  AND '20260106'
+							
+							
+                            GROUP BY 	Z.OPER_DIV_L, A.BASE_DT, A.RJ_GROUP, DECODE('300', 200, A.REJ_RSN_CD2, A.STD_REJ_RSN_CD), A.OPER_ID,  CASE WHEN A.BASE_DT < '20210101' AND A.OWNR_CD='EPIRW' AND '300'='300' AND A.PROD_DIV_CD='EPI' AND A.RESPON='ALLO' AND A.RATIO < 1 THEN 'EPI기술2팀' ELSE  A.REAL_DPT_GROUP END
+                            -- 보정 테이블
+                            UNION ALL
+                            SELECT 		/*+ ORDERED */
+                                        Z.OPER_DIV_L, A.BASE_DT, A.RJ_GROUP
+                                ,		DECODE('300', 200, A.REJ_RSN_CD, A.STD_REJ_RSN_CD) REJ_RSN_CD
+                                ,       A.OPER_ID
+								,		'' DIV_CD
+                                ,		CASE WHEN A.BASE_DT < '20210101' AND A.OWNR_CD='EPIRW' AND '300'='300' AND A.PROD_DIV_CD='EPI' AND A.RESPON='ALLO' AND A.RATIO < 1 THEN 'EPI기술2팀' ELSE  A.REAL_DPT_GROUP END DPT_GROUP
+                                ,		SUM( A.QTY ) DIS_QTY
+                            FROM 		PMDW_MGR.DW_BA_CM_TOTALREJMANUAL_S 	A
+                            JOIN	    PMDW_MGR.DW_BA_CM_STDPOPER_M	Z
+                            ON			Z.FAC_ID						=	A.FAC_ID
+                            AND			Z.OPER_ID						=	A.OPER_ID
+                            LEFT JOIN 	PMDW_MGR.DW_BA_MS_PROD_M D
+                            ON			D.PROD_ID						=	A.PROD_ID
+                            AND			D.SPEC_DIV_CD 					=	'PS'
+                            WHERE		1=1
+                            AND			Z.WAF_SIZE						=	'300'
+                            AND			Z.OPER_DIV_L					=	'WF'
+                            
+							AND A.FAC_ID IN ('WF7','WF8','WFA','FPC7','FPC8')
+                            AND			(('PN'	=	'PN')	OR	(D.GRD_CD_NM	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                            AND			(('PN'	=	'PN')	OR	(D.GRD_CD_NM_PS	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                            AND         (SELECT DMS_MGR.FN_SIC_FACID_YN(A.FAC_ID) FROM DUAL) = 'N'
+                            AND         A.BASE_DT                   BETWEEN DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') , 'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')  AND '20260106'
+							
+							
+                            GROUP BY 	Z.OPER_DIV_L, A.BASE_DT, A.RJ_GROUP, DECODE('300', 200, A.REJ_RSN_CD, A.STD_REJ_RSN_CD), A.OPER_ID,  CASE WHEN A.BASE_DT < '20210101' AND A.OWNR_CD='EPIRW' AND '300'='300' AND A.PROD_DIV_CD='EPI' AND A.RESPON='ALLO' AND A.RATIO < 1 THEN 'EPI기술2팀' ELSE  A.REAL_DPT_GROUP END
+                ) FF
+                OUTER APPLY
+                (	-- 팀부서그룹
+                    SELECT 		TEAMGRP_NM, SORT_SEQ SORT_CD
+                    FROM
+                    (			SELECT 		S2.TEAMGRP_NM, S2.SORT_SEQ,  ROW_NUMBER() OVER (ORDER BY ST_DT DESC) AS M
+                                FROM 		PMDW_MGR.DW_BA_CM_LOSSREJGRPDTL_M S1
+                                INNER JOIN	PMDW_MGR.DW_BA_CM_LOSSREJGRP_M S2
+                                ON			S1.TEAMGRP_CD					=	S2.TEAMGRP_CD
+                                AND			S1.WAF_SIZE						= 	S2.WAF_SIZE
+                                AND			S1.OPER_DIV_L					=	S2.OPER_DIV_L
+                                AND			S1.TARGET_DIV_CD 				IN ('A','R') /*A= 전체, L=불량, R=폐기*/
+                                AND			S1.WAF_SIZE						= '300'
+                                AND			S1.OPER_DIV_L					= 'WF'
+                                AND			S1.ED_DT						>= DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')
+                                AND			S1.ST_DT						<= '20260106'
+                                AND			S1.DPT_CD						= FF.DPT_GROUP
+                                ORDER BY 	M DESC
+                    ) SRES
+                    WHERE 	ROWNUM=1
+                ) E
+                GROUP BY 	OPER_DIV_L, BASE_DT, RJ_GROUP, REJ_RSN_CD, DIV_CD, OPER_ID, NVL(E.TEAMGRP_NM, FF.DPT_GROUP)
+            ),
+            DIS_QTY_INFO AS
+            (
+                -- 폐기율 분모 (생산실적 + 폐기실적)
+                SELECT  	A1.OPER_DIV_L
+                        , 	A1.BASE_DT
+                        ,	'DIS_QTY' DIV_CD
+                        , 	SUM(A1.ACC_QTY)     AS ACC_QTY
+                        , 	SUM(A1.MGR_QTY)     AS MGR_QTY
+                FROM
+                (
+                            -- 생산실적
+                            SELECT		/*+ ORDERED */
+                                        DECODE(A.PROD_KIND_DIV_CD, 'EPI', 'EPI', 'WF')          AS OPER_DIV_L
+                                , 	  	A.BASE_DT
+                                , 	  	SUM(A.QTY)                                              AS ACC_QTY
+                                , 	  	SUM(A.QTY)                                              AS MGR_QTY
+                            FROM    	PMDW_MGR.DM_PP_AC_ENTRWFACRL_S  A
+                            LEFT JOIN 	PMDW_MGR.DW_BA_MS_PROD_M        B
+                            ON			B.PROD_ID												=	A.PROD_ID
+                            AND			B.SPEC_DIV_CD											=	'PS'
+                            WHERE   	1=1
+							AND A.FAC_ID IN ('WF7','WF8','WFA','FPC7','FPC8')
+                            AND			DECODE(A.INCH, '08', '200', '12', '300')				=	'300'
+                            AND			DECODE(A.PROD_KIND_DIV_CD, 'EPI', 'EPI', 'WF') 			=	'WF'
+                            AND			A.BASE_DT												BETWEEN DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') , 'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')  AND '20260106'
+                            AND     	NVL(B.TST_FORML_FLAG,' ')								NOT IN ('L','N','V')
+                            AND     	A.PROD_ID   											NOT LIKE  '08Y029%'
+                            AND			(('PN'	=	'PN')	OR	(B.GRD_CD_NM	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                            AND			(('PN'	=	'PN')	OR	(B.GRD_CD_NM_PS	=	'PN'))			-- 2022-03-21 김민규프로 요청으로 추가
+                            AND         (SELECT DMS_MGR.FN_SIC_FACID_YN(A.FAC_ID) FROM DUAL) = 'N'
+							
+							
+                            GROUP BY 	A.INCH, DECODE(A.PROD_KIND_DIV_CD, 'EPI', 'EPI', 'WF'), A.BASE_DT
+                            UNION ALL
+                            -- 폐기실적
+                            SELECT 		A.OPER_DIV_L
+                                , 	  	A.BASE_DT
+                                , 	  	SUM(A.TOT_DIS_QTY)      AS ACC_QTY
+                                ,		0	OUT_QTY
+                            FROM   	 	SCRAP_DATA    A
+                            GROUP BY  	A.OPER_DIV_L, A.BASE_DT
+                )   A1
+                GROUP BY  A1.OPER_DIV_L, A1.BASE_DT
+            )
+            ,GOAL_INFO AS
+            (
+                --	분기 목표
+                SELECT		YLD_DIV1_CD, TEAMS, YLD_DIV3_CD, BASE_DT_NM, CATEGORY, AVG(GOAL) GOAL
+                FROM
+                (
+                            SELECT 		A.YLD_DIV1_CD
+                                    ,	NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD) AS TEAMS
+                                    ,	A.YLD_DIV3_CD
+                                    ,	SUBSTR(Z.BASE_QTR_NM,3) BASE_DT_NM
+                                    ,	Z.BASE_YM_NM
+                                    ,	'Q'	CATEGORY
+                                    ,	SUM(A.GOAL_VAL) GOAL
+                            FROM 		(SELECT DISTINCT BASE_YM, BASE_QTR_NM, BASE_YM_NM FROM PMDW_MGR.DW_BA_CM_BASEDATE_M WHERE BASE_DT BETWEEN TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD') AND '20260106') Z
+                            JOIN	    PMDW_MGR.DW_BA_CM_YLDPLAN_M A
+                            ON			A.BASE_YM				=	Z.BASE_YM
+                            AND			A.GOAL_DIV_CD			=	'DIS-RATE'
+                            AND			A.YLD_PLAN_TYPE			=	'BP'
+                            AND			A.WAF_SIZE				=	'300'
+                            AND			A.YLD_DIV1_CD			=	'WF'
+							AND         A.REF_DIV2              =   'PN'      -- 전나정프로 Grade 추가
+                            OUTER APPLY
+                            (			-- 팀부서그룹
+                                        SELECT 		TEAMGRP_NM, SORT_SEQ SORT_CD
+                                        FROM		(	SELECT 		S2.TEAMGRP_NM, S2.SORT_SEQ,  ROW_NUMBER() OVER (ORDER BY ST_DT DESC) AS M
+                                                        FROM 		PMDW_MGR.DW_BA_CM_LOSSREJGRPDTL_M S1
+                                                        INNER JOIN	PMDW_MGR.DW_BA_CM_LOSSREJGRP_M S2
+                                                        ON			S1.TEAMGRP_CD					=	S2.TEAMGRP_CD
+                                                        AND			S1.WAF_SIZE						= 	S2.WAF_SIZE
+                                                        AND			S1.OPER_DIV_L					=	S2.OPER_DIV_L
+                                                        AND			S1.TARGET_DIV_CD 				IN ('A','R') /*A= 전체, L=불량, R=폐기*/
+                                                        AND			S1.WAF_SIZE						= '300'
+                                                        AND			S1.OPER_DIV_L					= 'WF'
+                                                        AND			S1.ED_DT						>= DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')
+                                                        AND			S1.ST_DT						<= '20260106'
+                                                        AND			S1.DPT_CD						= A.YLD_DIV2_CD
+                                                        ORDER BY 	M DESC	) SRES
+                                        WHERE 			ROWNUM=1
+                            ) B
+                            WHERE		1=1
+                            AND			'D'				=	'Q'
+                            
+                            
+							AND			'WF7,WF8,WFA,FPC7,FPC8' 			!= 'WFA'
+							AND			A.YLD_DIV3_CD       != 'R' || CHR(038) || 'D'
+                            GROUP BY	A.YLD_DIV1_CD, NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD), A.YLD_DIV3_CD, SUBSTR(Z.BASE_QTR_NM,3), Z.BASE_YM_NM
+                ) A
+                GROUP BY 	YLD_DIV1_CD, TEAMS, YLD_DIV3_CD, BASE_DT_NM, CATEGORY
+
+                UNION ALL
+                --	월 목표
+                SELECT 		A.YLD_DIV1_CD
+                        ,	NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD) AS TEAMS
+                        ,	A.YLD_DIV3_CD
+                        ,	SUBSTR(Z.BASE_YM_NM,3) BASE_DT_NM
+                        ,	'M'	CATEGORY
+                        ,	SUM(A.GOAL_VAL) GOAL
+                FROM 		(SELECT DISTINCT BASE_YM, BASE_YM_NM FROM PMDW_MGR.DW_BA_CM_BASEDATE_M WHERE BASE_DT BETWEEN '20260101' AND '20260106') Z
+                JOIN	    PMDW_MGR.DW_BA_CM_YLDPLAN_M A
+                ON			A.BASE_YM				=	Z.BASE_YM
+                AND			A.GOAL_DIV_CD			=	'DIS-RATE'
+                AND			A.YLD_PLAN_TYPE			=	'BP'
+                AND			A.WAF_SIZE				=	'300'
+                AND			A.YLD_DIV1_CD			=	'WF'
+				AND         A.REF_DIV2              =   'PN'      -- 전나정프로 Grade 추가
+                OUTER APPLY
+                (			-- 팀부서그룹
+                            SELECT 		TEAMGRP_NM, SORT_SEQ SORT_CD
+                            FROM		(	SELECT 		S2.TEAMGRP_NM, S2.SORT_SEQ,  ROW_NUMBER() OVER (ORDER BY ST_DT DESC) AS M
+                                            FROM 		PMDW_MGR.DW_BA_CM_LOSSREJGRPDTL_M S1
+                                            INNER JOIN	PMDW_MGR.DW_BA_CM_LOSSREJGRP_M S2
+                                            ON			S1.TEAMGRP_CD					=	S2.TEAMGRP_CD
+                                            AND			S1.WAF_SIZE						= 	S2.WAF_SIZE
+                                            AND			S1.OPER_DIV_L					=	S2.OPER_DIV_L
+                                            AND			S1.TARGET_DIV_CD 				IN ('A','R') /*A= 전체, L=불량, R=폐기*/
+                                            AND			S1.WAF_SIZE						= '300'
+                                            AND			S1.OPER_DIV_L					= 'WF'
+                                            AND			S1.ED_DT						>= DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')
+                                            AND			S1.ST_DT						<= '20260106'
+                                            AND			S1.DPT_CD						= A.YLD_DIV2_CD
+                                            ORDER BY 	M DESC	) SRES
+                            WHERE 			ROWNUM=1
+                ) B
+                WHERE		1=1
+                AND			'D'				IN ('M','MWD')
+                
+                
+				AND			'WF7,WF8,WFA,FPC7,FPC8' 			!= 'WFA'
+				AND			A.YLD_DIV3_CD       != 'R' || CHR(038) || 'D'
+                GROUP BY	A.YLD_DIV1_CD, NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD), A.YLD_DIV3_CD, SUBSTR(Z.BASE_YM_NM,3)
+
+                UNION ALL
+                -- 주 목표
+                SELECT 		A.YLD_DIV1_CD
+                    ,		NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD) AS TEAMS
+                    ,		A.YLD_DIV3_CD
+                    ,		SUBSTR(Z.BESOF_BASE_YW_NM,3) BASE_DT_NM
+                    ,		'W'	CATEGORY
+                    ,		SUM(A.GOAL_VAL) GOAL
+                FROM
+                (
+                            SELECT		BESOF_BASE_YW_NM
+                                , 		BASE_YM
+                                , 		ROW_NUMBER() OVER(PARTITION BY BESOF_BASE_YW_NM ORDER BY COUNT(BASE_DT) DESC) AS CNT
+                            FROM  		PMDW_MGR.DW_BA_CM_BASEDATE_M
+                            WHERE  		BASE_DT BETWEEN TO_CHAR(TRUNC(TO_DATE('20260101'),'DY'),'YYYYMMDD') AND '20260106'
+                            GROUP BY 	BESOF_BASE_YW_NM, BASE_YM
+                ) Z
+                JOIN	    PMDW_MGR.DW_BA_CM_YLDPLAN_M A
+                ON			A.BASE_YM				=	Z.BASE_YM
+                AND			A.GOAL_DIV_CD			=	'DIS-RATE'
+                AND			A.YLD_PLAN_TYPE			=	'BP'
+                AND			A.WAF_SIZE				=	'300'
+                AND			A.YLD_DIV1_CD			=	'WF'
+				AND         A.REF_DIV2              =   'PN'      -- 전나정프로 Grade 추가
+                OUTER APPLY
+                (			-- 팀부서그룹
+                            SELECT 		TEAMGRP_NM, SORT_SEQ SORT_CD
+                            FROM		(	SELECT 		S2.TEAMGRP_NM, S2.SORT_SEQ,  ROW_NUMBER() OVER (ORDER BY ST_DT DESC) AS M
+                                            FROM 		PMDW_MGR.DW_BA_CM_LOSSREJGRPDTL_M S1
+                                            INNER JOIN	PMDW_MGR.DW_BA_CM_LOSSREJGRP_M S2
+                                            ON			S1.TEAMGRP_CD					=	S2.TEAMGRP_CD
+                                            AND			S1.WAF_SIZE						= 	S2.WAF_SIZE
+                                            AND			S1.OPER_DIV_L					=	S2.OPER_DIV_L
+                                            AND			S1.TARGET_DIV_CD 				IN ('A','R') /*A= 전체, L=불량, R=폐기*/
+                                            AND			S1.WAF_SIZE						= '300'
+                                            AND			S1.OPER_DIV_L					= 'WF'
+                                            AND			S1.ED_DT						>= DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')
+                                            AND			S1.ST_DT						<= '20260106'
+                                            AND			S1.DPT_CD						= A.YLD_DIV2_CD
+                                            ORDER BY 	M DESC	) SRES
+                            WHERE 			ROWNUM=1
+                ) B
+                WHERE 		Z.CNT = 1
+                AND			'D'				IN ('W','MWD')
+                
+                
+				AND			'WF7,WF8,WFA,FPC7,FPC8' 			!= 'WFA'
+				AND			A.YLD_DIV3_CD       != 'R' || CHR(038) || 'D'
+                GROUP BY	A.YLD_DIV1_CD,  NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD), A.YLD_DIV3_CD, SUBSTR(Z.BESOF_BASE_YW_NM,3)
+
+                UNION ALL
+
+                --	일 목표
+                SELECT 		A.YLD_DIV1_CD
+                        ,	NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD) AS TEAMS
+                        ,	A.YLD_DIV3_CD
+                        ,	TO_CHAR(TO_DATE(Z.BASE_DT, 'YYYYMMDD'),'YY-MM-DD') BASE_DT_NM
+                        ,	'D'	CATEGORY
+                        ,	SUM(A.GOAL_VAL) GOAL
+                FROM 		PMDW_MGR.DW_BA_CM_BASEDATE_M Z
+                JOIN	    PMDW_MGR.DW_BA_CM_YLDPLAN_M A
+                ON			A.BASE_YM				=	Z.BASE_YM
+                AND			A.GOAL_DIV_CD			=	'DIS-RATE'
+                AND			A.YLD_PLAN_TYPE			=	'BP'
+                AND			A.WAF_SIZE				=	'300'
+                AND			A.YLD_DIV1_CD			=	'WF'
+				AND         A.REF_DIV2              =   'PN'      -- 전나정프로 Grade 추가
+                OUTER APPLY
+                (			-- 팀부서그룹
+                            SELECT 		TEAMGRP_NM, SORT_SEQ SORT_CD
+                            FROM		(	SELECT 		S2.TEAMGRP_NM, S2.SORT_SEQ,  ROW_NUMBER() OVER (ORDER BY ST_DT DESC) AS M
+                                            FROM 		PMDW_MGR.DW_BA_CM_LOSSREJGRPDTL_M S1
+                                            JOIN	    PMDW_MGR.DW_BA_CM_LOSSREJGRP_M S2
+                                            ON			S1.TEAMGRP_CD					=	S2.TEAMGRP_CD
+                                            AND			S1.WAF_SIZE						= 	S2.WAF_SIZE
+                                            AND			S1.OPER_DIV_L					=	S2.OPER_DIV_L
+                                            AND			S1.TARGET_DIV_CD 				IN ('A','R') /*A= 전체, L=불량, R=폐기*/
+                                            AND			S1.WAF_SIZE						= '300'
+                                            AND			S1.OPER_DIV_L					= 'WF'
+                                            AND			S1.ED_DT						>= DECODE('D','MWD', TO_CHAR(  TRUNC(TO_DATE( SUBSTR('20260101',1,6) || '01', 'YYYYMMDD'),'DY'), 'YYYYMMDD') ,  'Q',TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD'), 'M', SUBSTR('20260101',1,6)||'01', 'W', TO_CHAR( TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'),'YYYYMMDD'), '20260101')
+                                            AND			S1.ST_DT						<= '20260106'
+                                            AND			S1.DPT_CD						= A.YLD_DIV2_CD
+                                            ORDER BY 	M DESC	) SRES
+                            WHERE 			ROWNUM=1
+                ) B
+                WHERE 		1=1
+                AND			'D'				IN ('D','MWD')
+                AND			Z.BASE_DT 				BETWEEN '20260101' AND '20260106'
+                
+                
+				AND			'WF7,WF8,WFA,FPC7,FPC8' 			!= 'WFA'
+				AND			A.YLD_DIV3_CD       != 'R' || CHR(038) || 'D'
+                GROUP BY	A.YLD_DIV1_CD,  NVL( B.TEAMGRP_NM, A.YLD_DIV2_CD), A.YLD_DIV3_CD, Z.BASE_DT
+            )
+
+            SELECT		CATEGORY, BASE_DT_NM, RJ_GROUP, REJ_RSN_CD, OPER_ID,
+                        CAST(DIS_RATIO AS NUMBER(24,16)) DIS_RATIO,
+                        CAST(DECODE(RJ_GROUP, 'R' || CHR(038) || 'D', 0.009, GOAL_RATIO) AS NUMBER(24,16)) GOAL_RATIO,
+                        CAST(GOAL_RATIO_SUM AS NUMBER(24,16)) GOAL_RATIO_SUM,
+                        CAST(GAP_RATIO AS NUMBER(24,16)) GAP_RATIO,
+                        DIS_QTY, MGR_QTY, NVL(ZZ2.SORT_ORDER,99999) SORT_CD
+            FROM
+            (
+
+                        SELECT		FF.CATEGORY
+                            , 		FF.BASE_DT_NM BASE_DT_NM
+                            ,		FF.RJ_GROUP
+                            ,		'' REJ_RSN_CD
+							,       '' OPER_ID
+                            ,		FF.DIS_RATIO
+                            ,		NVL(GOAL_RATIO,0)	GOAL_RATIO
+                            ,		NVL(FF3.GOAL,0)	GOAL_RATIO_SUM
+                            ,		FF.DIS_RATIO	-	NVL(FF.GOAL_RATIO,0)	GAP_RATIO
+                            ,		FF.DIS_QTY
+                            ,		FF.MGR_QTY
+
+                        FROM
+                        (
+                                        SELECT			CATEGORY
+                                                ,		BASE_DT_NM
+                                                ,		RJ_GROUP
+                                                ,		SUM(DIS_RATIO) 		DIS_RATIO
+                                                ,		SUM(DIS_QTY)		DIS_QTY
+                                                ,		SUM(MGR_QTY)		MGR_QTY
+                                                ,		SUM(GOAL_RATIO)	GOAL_RATIO
+                                        FROM
+                                        (
+                                                        SELECT 			S1.CATEGORY
+                                                                ,		S1.BASE_DT_NM
+                                                                ,		RJ_GROUP
+                                                                ,		CASE WHEN NVL(SUM(S2.ACC_QTY),0) <> 0 THEN SUM(S1.DIS_QTY) / SUM(S2.ACC_QTY) END DIS_RATIO
+                                                                ,		NVL(SUM(S1.DIS_QTY),0) DIS_QTY
+                                                                ,		SUM(S2.MGR_QTY) MGR_QTY
+                                                                ,		0 GOAL_RATIO
+                                                        FROM
+                                                        (
+                                                                        -- 데이터	(QUARTER)
+                                                                        SELECT 		Z.OPER_DIV_L, SUBSTR(Y.BASE_QTR_NM,3) BASE_DT_NM, RJ_GROUP, SUM(Z.DIS_QTY) DIS_QTY, 'Q' CATEGORY
+                                                                        FROM    	SCRAP_DATA Z
+                                                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                                                        ON			Y.BASE_DT				=	Z.BASE_DT
+                                                                        WHERE		1=1
+                                                                        AND			'D'				= 'Q'
+                                                                        AND			Z.DIV_CD				IS NULL
+                                                                        AND 		Z.BASE_DT 				>= TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD')
+                                                                        GROUP BY 	Z.OPER_DIV_L, SUBSTR(Y.BASE_QTR_NM,3), RJ_GROUP
+                                                                        HAVING		SUM(Z.DIS_QTY) 			<> 0
+
+                                                                        UNION ALL -- 데이터	(MONTH)
+
+                                                                        SELECT 		Z.OPER_DIV_L, SUBSTR(Y.BASE_YM_NM,3) BASE_DT_NM, RJ_GROUP, SUM(Z.DIS_QTY) DIS_QTY, 'M' CATEGORY
+                                                                        FROM    	SCRAP_DATA Z
+                                                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                                                        ON			Y.BASE_DT				=	Z.BASE_DT
+                                                                        WHERE		1=1
+                                                                        AND			'D'				IN ('M','MWD')
+                                                                        AND			Z.DIV_CD				IS NULL
+                                                                        AND 		Z.BASE_DT 				>= SUBSTR('20260101',1,6) || '01'
+                                                                        GROUP BY 	Z.OPER_DIV_L, SUBSTR(Y.BASE_YM_NM,3), RJ_GROUP
+                                                                        HAVING		SUM(Z.DIS_QTY) 		<> 0
+
+                                                                        UNION ALL	-- 데이터 (WEEK)
+
+                                                                        SELECT 		Z.OPER_DIV_L, SUBSTR(Y.BESOF_BASE_YW_NM,3) BASE_DT_NM, RJ_GROUP, SUM(Z.DIS_QTY) DIS_QTY,  'W' CATEGORY
+                                                                        FROM    	SCRAP_DATA Z
+                                                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                                                        ON			Y.BASE_DT				=	Z.BASE_DT
+                                                                        WHERE		1=1
+                                                                        AND			'D'				IN ('W','MWD')
+                                                                        AND			Z.DIV_CD				IS NULL
+                                                                        AND 		Z.BASE_DT 				>= TO_CHAR(TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'), 'YYYYMMDD')
+                                                                        GROUP BY 	Z.OPER_DIV_L, SUBSTR(Y.BESOF_BASE_YW_NM,3), RJ_GROUP
+                                                                        HAVING		SUM(Z.DIS_QTY) <> 0
+
+                                                                        UNION ALL	-- 데이터 (DAY)
+
+                                                                        SELECT  	Z.OPER_DIV_L, TO_CHAR(TO_DATE(Z.BASE_DT, 'YYYYMMDD'),'YY-MM-DD') BASE_DT_NM, Z.RJ_GROUP, SUM(Z.DIS_QTY) DIS_QTY, 'D' CATEGORY
+                                                                        FROM    	SCRAP_DATA Z
+                                                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                                                        ON			Y.BASE_DT				=	Z.BASE_DT
+                                                                        WHERE		1=1
+                                                                        AND			'D'				IN ('D','MWD')
+                                                                        AND			Z.DIV_CD				IS NULL
+                                                                        AND 		Z.BASE_DT 				>= '20260101'
+                                                                        GROUP BY 	Z.OPER_DIV_L, TO_CHAR(TO_DATE(Z.BASE_DT, 'YYYYMMDD'),'YY-MM-DD'), Z.RJ_GROUP
+                                                                        HAVING		SUM(Z.DIS_QTY) <> 0
+                                                        ) S1
+                                                        LEFT JOIN
+                                                        (
+                                                                        -- 분모 (QUARTER)
+                                                                        SELECT		OPER_DIV_L, SUBSTR(B.BASE_QTR_NM,3)	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY, SUM(MGR_QTY) MGR_QTY,	'Q'	CATEGORY
+                                                                        FROM 		DIS_QTY_INFO A
+                                                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                                                        ON			A.BASE_DT 				=	B.BASE_DT
+                                                                        WHERE 		1=1
+                                                                        AND			'D'				= 'Q'
+                                                                        AND			DIV_CD 					= 'DIS_QTY'
+                                                                        AND 		A.BASE_DT 				>= TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD')
+                                                                        GROUP BY 	OPER_DIV_L, SUBSTR(B.BASE_QTR_NM,3)
+
+                                                                        UNION ALL
+
+                                                                        -- 분모 (MONTH)
+                                                                        SELECT		OPER_DIV_L, SUBSTR(B.BASE_YM_NM,3)	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY, SUM(MGR_QTY) MGR_QTY,	'M'	CATEGORY
+                                                                        FROM 		DIS_QTY_INFO A
+                                                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                                                        ON			A.BASE_DT 				=	B.BASE_DT
+                                                                        WHERE 		1=1
+                                                                        AND			'D'				IN ('M','MWD')
+                                                                        AND			DIV_CD 					= 'DIS_QTY'
+                                                                        AND 		A.BASE_DT 				>= SUBSTR('20260101',1,6) || '01'
+                                                                        GROUP BY 	OPER_DIV_L, SUBSTR(B.BASE_YM_NM,3)
+
+                                                                        UNION ALL -- 분모 (WEEK)
+
+                                                                        SELECT		OPER_DIV_L, SUBSTR(B.BESOF_BASE_YW_NM,3)	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY,	SUM(MGR_QTY) MGR_QTY, 'W'	CATEGORY
+                                                                        FROM 		DIS_QTY_INFO A
+                                                                        JOIN 	    PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                                                        ON			A.BASE_DT 				=	B.BASE_DT
+                                                                        WHERE 		1=1
+                                                                        AND			'D'				IN ('W','MWD')
+                                                                        AND			DIV_CD 					= 'DIS_QTY'
+                                                                        AND 		A.BASE_DT 				>= TO_CHAR(TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'), 'YYYYMMDD')
+                                                                        GROUP BY 	OPER_DIV_L, SUBSTR(B.BESOF_BASE_YW_NM,3)
+
+                                                                        UNION ALL -- 분모 (DAY)
+
+                                                                        SELECT		OPER_DIV_L, TO_CHAR(TO_DATE(A.BASE_DT, 'YYYYMMDD'),'YY-MM-DD')	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY, SUM(MGR_QTY) MGR_QTY, 	'D'	CATEGORY
+                                                                        FROM 		DIS_QTY_INFO A
+                                                                        JOIN        PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                                                        ON			B.BASE_DT 				=	A.BASE_DT
+                                                                        WHERE 		1=1
+                                                                        AND			'D'				IN ('D','MWD')
+                                                                        AND			DIV_CD 					= 'DIS_QTY'
+                                                                        AND 		A.BASE_DT 				>= '20260101'
+                                                                        GROUP BY 	OPER_DIV_L, TO_CHAR(TO_DATE(A.BASE_DT, 'YYYYMMDD'),'YY-MM-DD')
+                                                        ) S2
+                                                        ON			S2.BASE_DT_NM				=	S1.BASE_DT_NM
+                                                        AND			S2.OPER_DIV_L				=	S1.OPER_DIV_L
+                                                        AND			S2.CATEGORY					=	S1.CATEGORY
+                                                        GROUP BY 	S1.CATEGORY
+                                                            ,		S1.BASE_DT_NM
+                                                            ,		S1.RJ_GROUP
+
+                                                        UNION ALL
+                                                        --- 목표
+                                                        SELECT 		CATEGORY
+                                                                ,	BASE_DT_NM
+                                                                ,	YLD_DIV3_CD RJ_GROUP
+                                                                ,	0 DIS_RATIO
+                                                                ,	0 DIS_QTY
+                                                                ,	0 MGR_QTY
+                                                                ,	GOAL AS GOAL_RATIO
+                                                        FROM 		GOAL_INFO
+                                        ) AA
+                            GROUP BY 	CATEGORY
+                                    ,	BASE_DT_NM
+                                    ,	RJ_GROUP
+
+                        )	FF
+
+                        -- 목표 (일자별 계)
+                        LEFT JOIN 	(SELECT YLD_DIV1_CD, BASE_DT_NM, CATEGORY, SUM(GOAL) GOAL FROM GOAL_INFO GROUP BY  YLD_DIV1_CD, BASE_DT_NM, CATEGORY )  FF3
+                        ON			FF3.YLD_DIV1_CD					=	'WF'
+                        AND			FF3.BASE_DT_NM					=	FF.BASE_DT_NM
+                        AND			FF3.CATEGORY					=	FF.CATEGORY
+
+                        UNION ALL
+
+                        SELECT 		Z.CATEGORY, Z.BASE_DT_NM, Z.RJ_GROUP, Z.REJ_RSN_CD, Z.OPER_ID
+                                ,	CASE WHEN ACC_QTY <> 0 THEN DIS_QTY / ACC_QTY END DIS_RATIO, 0.0 GOAL_RATIO, 0.0 GOAL_RATIO_SUM, 0.0 GAP_RATIO, Z.DIS_QTY DIS_QTY, 0 MGR_QTY
+                        FROM
+                        (
+                                    ----------------------------REJ_RSN_CD (세부 불량)-----------------------------------------
+                                    -- 데이터 (분기)
+                                    SELECT 			'Q-DIS_RSN' CATEGORY, SUBSTR(BASE_QTR_NM,3) BASE_DT_NM, RJ_GROUP, NVL(Z.REJ_RSN_CD,'UNKNOWN') REJ_RSN_CD, Z.OPER_ID , SUM(Z.DIS_QTY) DIS_QTY
+                                    FROM    		SCRAP_DATA Z
+                                    JOIN		    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                    ON				Y.BASE_DT					=	Z.BASE_DT
+                                    WHERE			Z.DIV_CD					IS NULL
+                                    AND 			Z.BASE_DT 					>= TO_CHAR(TRUNC( TO_DATE( SUBSTR('20260101',1,6) || '01' ), 'Q'), 'YYYYMMDD' )
+                                    GROUP BY 		SUBSTR(BASE_QTR_NM,3), RJ_GROUP, REJ_RSN_CD, Z.OPER_ID
+                                    HAVING			SUM(Z.DIS_QTY) <> 0
+                                    -- 데이터 (월)
+                                    UNION ALL
+                                    SELECT 			'M-DIS_RSN' CATEGORY, SUBSTR(Y.BASE_YM_NM,3) BASE_DT_NM, RJ_GROUP, NVL(Z.REJ_RSN_CD,'UNKNOWN') REJ_RSN_CD, Z.OPER_ID , SUM(Z.DIS_QTY) DIS_QTY
+                                    FROM    		SCRAP_DATA Z
+                                    JOIN		    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                    ON				Y.BASE_DT					=	Z.BASE_DT
+                                    WHERE			Z.DIV_CD					IS NULL
+                                    AND 			Z.BASE_DT 					>= SUBSTR('20260101',1,6) || '01'
+                                    GROUP BY 		SUBSTR(Y.BASE_YM_NM,3), RJ_GROUP, REJ_RSN_CD, Z.OPER_ID
+                                    HAVING			SUM(Z.DIS_QTY) <> 0
+
+                                    UNION ALL
+                                    -- 데이터 (WEEK)
+                                    SELECT 			'W-DIS_RSN' CATEGORY, SUBSTR(Y.BESOF_BASE_YW_NM,3) BASE_DT_NM, RJ_GROUP, NVL(Z.REJ_RSN_CD,'UNKNOWN') REJ_RSN_CD, Z.OPER_ID, SUM(Z.DIS_QTY) DIS_QTY
+                                    FROM    		SCRAP_DATA Z
+                                    JOIN		    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                    ON				Y.BASE_DT					=	Z.BASE_DT
+                                    WHERE			Z.DIV_CD					IS NULL
+                                    AND 			Z.BASE_DT 					>= TO_CHAR(TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'), 'YYYYMMDD')
+                                    GROUP BY 		SUBSTR(Y.BESOF_BASE_YW_NM,3), RJ_GROUP, REJ_RSN_CD, Z.OPER_ID
+                                    HAVING			SUM(Z.DIS_QTY) 			<> 0
+
+                                    UNION ALL
+                                    -- 데이터 (DAY)
+                                    SELECT			'D-DIS_RSN' CATEGORY, TO_CHAR(TO_DATE(Z.BASE_DT, 'YYYYMMDD'),'YY-MM-DD') BASE_DT_NM, RJ_GROUP, NVL(Z.REJ_RSN_CD,'UNKNOWN') REJ_RSN_CD, Z.OPER_ID, SUM(Z.DIS_QTY) DIS_QTY
+                                    FROM    		SCRAP_DATA Z
+                                    JOIN		    PMDW_MGR.DW_BA_CM_BASEDATE_M Y
+                                    ON				Y.BASE_DT					=	Z.BASE_DT
+                                    WHERE			Z.DIV_CD					IS NULL
+                                    AND 			Z.BASE_DT 					>= '20260101'
+                                    GROUP BY 		TO_CHAR(TO_DATE(Z.BASE_DT, 'YYYYMMDD'),'YY-MM-DD'), RJ_GROUP, Z.REJ_RSN_CD, Z.OPER_ID
+                                    HAVING			SUM(Z.DIS_QTY) 				<> 0
+                        ) Z
+                        LEFT JOIN
+                        (
+                                        -- 분모 (QUARTER)
+                                        SELECT		OPER_DIV_L, SUBSTR(B.BASE_QTR_NM,3)	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY,	'Q'	CATEGORY
+                                        FROM 		DIS_QTY_INFO A
+                                        JOIN	PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                        ON			A.BASE_DT 				=	B.BASE_DT
+                                        WHERE 		1=1
+                                        AND			DIV_CD 					= 'DIS_QTY'
+                                        AND 		A.BASE_DT 				>= TO_CHAR(TRUNC( TO_DATE('20260101', 'YYYYMMDD'), 'Q'), 'YYYYMMDD')
+                                        GROUP BY 	OPER_DIV_L, SUBSTR(B.BASE_QTR_NM,3)
+
+                                        UNION ALL
+
+                                        -- 분모 (MONTH)
+                                        SELECT		OPER_DIV_L, SUBSTR(B.BASE_YM_NM,3)	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY,	'M'	CATEGORY
+                                        FROM 		DIS_QTY_INFO A
+                                        JOIN	    PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                        ON			A.BASE_DT 				=	B.BASE_DT
+                                        WHERE 		1=1
+                                        AND			DIV_CD 					= 'DIS_QTY'
+                                        AND 		A.BASE_DT 				>= SUBSTR('20260101',1,6) || '01'
+                                        GROUP BY 	OPER_DIV_L, SUBSTR(B.BASE_YM_NM,3)
+
+                                        UNION ALL -- 분모 (WEEK)
+
+                                        SELECT		OPER_DIV_L, SUBSTR(B.BESOF_BASE_YW_NM,3)	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY, 'W'	CATEGORY
+                                        FROM 		DIS_QTY_INFO A
+                                        JOIN 	    PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                        ON			A.BASE_DT 				=	B.BASE_DT
+                                        WHERE 		1=1
+                                        AND			DIV_CD 					= 'DIS_QTY'
+                                        AND 		A.BASE_DT 				>= TO_CHAR(TRUNC(TO_DATE('20260101','YYYYMMDD'),'DY'), 'YYYYMMDD')
+                                        GROUP BY 	OPER_DIV_L, SUBSTR(B.BESOF_BASE_YW_NM,3)
+
+                                        UNION ALL -- 분모 (DAY)
+
+                                        SELECT		OPER_DIV_L, TO_CHAR(TO_DATE(A.BASE_DT, 'YYYYMMDD'),'YY-MM-DD')	BASE_DT_NM,	SUM(ACC_QTY) ACC_QTY, 	'D'	CATEGORY
+                                        FROM 		DIS_QTY_INFO A
+                                        JOIN        PMDW_MGR.DW_BA_CM_BASEDATE_M B
+                                        ON			B.BASE_DT 				=	A.BASE_DT
+                                        WHERE 		1=1
+                                        AND			DIV_CD 					= 'DIS_QTY'
+                                        AND 		A.BASE_DT 				>= '20260101'
+                                        GROUP BY 	OPER_DIV_L, TO_CHAR(TO_DATE(A.BASE_DT, 'YYYYMMDD'),'YY-MM-DD')
+                        ) Y
+                        ON			Y.BASE_DT_NM				=	Z.BASE_DT_NM
+                        -----------------------------------------------------------------------------------------------
+            ) ZZ
+            -- REJECT 정렬코드
+            LEFT JOIN	DMS_MGR.TB_FX_CODES ZZ2
+            ON			UP_CD								=	'COM000'
+            AND			SYS_CD								=	'DMS'
+            AND			DECODE(CD_EXT1,'PW','WF',CD_EXT1)	= 'WF'
+            AND			CD_EXT2								= '300'
+            AND			CD_VAL								=	RJ_GROUP
